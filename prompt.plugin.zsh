@@ -12,9 +12,11 @@ autoload -Uz add-zsh-hook add-zle-hook-widget
 setopt prompt_subst
 zmodload zsh/datetime
 zmodload -F zsh/system p:sysparams 2> /dev/null
+zmodload -F zsh/stat b:zstat
 
 typeset -g PROMPT_SYMBOL="${PROMPT_SYMBOL:-"❯"}"
-typeset -gi _prompt_drawn=0
+typeset -gi _prompt_drawn=0 _prompt_exit_code=0
+typeset -ga _prompt_pipe_status=()
 typeset -g _prompt_keymap_symbol=''
 
 typeset -g _prompt_ssh_indicator=''
@@ -33,14 +35,21 @@ if [[ "${PPID}" == "${ZSH_INTERACTIVE_PID}" ]]; then
 fi
 export ZSH_INTERACTIVE_PID=$$
 
-for _prompt_file in command git terminal transient; do
+for _prompt_file in command git keymap terminal transient; do
   source "${_prompt_dir}/lib/${_prompt_file}.zsh"
 done
 unset _prompt_file
 
+# Runs first among the precmd hooks: any hook before it would reset $?.
+_prompt_precmd_capture() {
+  _prompt_exit_code="${?}"
+  _prompt_pipe_status=("${pipestatus[@]}")
+}
+
 _prompt_precmd() {
-  local exit_code="${?}" pipe_status=("$pipestatus[@]")
   emulate -L zsh
+
+  local exit_code="${_prompt_exit_code}" pipe_status=("${_prompt_pipe_status[@]}")
 
   _prompt_terminal_precmd "${exit_code}"
   _prompt_transient_restore
@@ -58,9 +67,12 @@ _prompt_precmd() {
 add-zsh-hook preexec _prompt_command_start
 add-zsh-hook preexec _prompt_terminal_preexec
 add-zsh-hook precmd _prompt_precmd
+precmd_functions=(_prompt_precmd_capture "${(@)precmd_functions:#_prompt_precmd_capture}")
 add-zsh-hook zshexit _prompt_git_cancel
 add-zle-hook-widget line-finish _prompt_line_finish
 add-zle-hook-widget line-init _prompt_line_init
+add-zle-hook-widget line-init _prompt_keymap_line_init
+add-zle-hook-widget keymap-select _prompt_keymap_select
 
 PROMPT='${_prompt_terminal_start}${_prompt_ssh_indicator}%B%F{blue}%~%f%b${_prompt_git_status}${_prompt_command_info}%(1j. %F{cyan}⚙%j%f.)'
 PROMPT+=$'\n''${_prompt_nested_shell_indicator}${_prompt_status_color}${_prompt_keymap_symbol:-${PROMPT_SYMBOL}}%f ${_prompt_terminal_end}'

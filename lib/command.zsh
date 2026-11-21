@@ -52,6 +52,8 @@ _prompt_pipeline_failed() {
 }
 
 _prompt_command_update() {
+  emulate -L zsh
+
   local -i exit_code="${1}"
   local -F elapsed
   local -a info=() labels=()

@@ -1,11 +1,20 @@
 typeset -g _prompt_git_status=''
 typeset -g _prompt_git_fd='' _prompt_git_pid='' _prompt_git_dir='' _prompt_git_name=''
 typeset -gi _prompt_git_limited=0 _prompt_git_clean=0
+typeset -gA _prompt_git_config_cache=()
 
 _prompt_git_locate() {
   emulate -L zsh
 
   local dir="${PWD}" git_dir
+  # An explicit GIT_DIR (dotfile bare repos, scripts) overrides the search.
+  if [[ -n "${GIT_DIR-}" ]]; then
+    git_dir="${GIT_DIR:A}"
+    [[ -d "${git_dir}" ]] || return 1
+    dir="${GIT_WORK_TREE:-${git_dir:h}}"
+    reply=("${dir:t}" "${git_dir}")
+    return 0
+  fi
   while true; do
     if [[ -d "${dir}/.git" ]]; then
       git_dir="${dir}/.git"
@@ -46,16 +55,29 @@ _prompt_git_action() {
   fi
 }
 
+# Sets REPLY to the repository config, one leading newline included. Reads are
+# cached per file until its modification time or size changes.
 _prompt_git_config() {
   emulate -L zsh
 
-  local git_dir="${1}" common="${1}"
+  local git_dir="${1}" common="${1}" file stamp
+  local -A info
   if [[ -r "${git_dir}/commondir" ]]; then
     common="$(< "${git_dir}/commondir")"
     [[ "${common}" == /* ]] || common="${git_dir}/${common}"
   fi
-  [[ -r "${common}/config" ]] || return 1
-  REPLY=$'\n'"$(< "${common}/config")"
+  file="${common}/config"
+  [[ -r "${file}" ]] || return 1
+  if ! zstat -H info -- "${file}" 2> /dev/null; then
+    # Without a stamp the cache cannot be trusted: read the file directly.
+    REPLY=$'\n'"$(< "${file}")"
+    return 0
+  fi
+  stamp="${info[mtime]}:${info[size]}"
+  if [[ "${_prompt_git_config_cache[${file}]-}" != "${stamp}"$'\x1f'* ]]; then
+    _prompt_git_config_cache[${file}]="${stamp}"$'\x1f'$'\n'"$(< "${file}")"
+  fi
+  REPLY="${_prompt_git_config_cache[${file}]#*$'\x1f'}"
 }
 
 _prompt_git_restricted() {
@@ -223,13 +245,11 @@ _prompt_git_update() {
   fi
   _prompt_git_limited=0
 
+  # `exec` makes git the process substitution itself, so its pid is the one
+  # to signal when the job is cancelled.
   exec {_prompt_git_fd}< <(
-    local data
-    trap '[[ -n "${!}" ]] && kill -- "${!}" 2> /dev/null; exit 129' HUP
-    coproc command git -c core.fsmonitor=false --no-optional-locks \
+    exec command git -c core.fsmonitor=false --no-optional-locks \
       status --porcelain=v2 --branch --show-stash --ignore-submodules=dirty 2> /dev/null
-    IFS= read -r -u p -d '' data
-    print -r -- "${data%$'\n'}"
   )
   _prompt_git_pid="${sysparams[procsubstpid]-}"
   zle -F "${_prompt_git_fd}" _prompt_git_callback
